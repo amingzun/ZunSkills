@@ -18,6 +18,7 @@ STYLES = ["保守稳重", "清爽专业", "高级设计感"]
 CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
 CHROME_WAIT_SECONDS = 20
 CHROME_GRACE_SECONDS = 2
+CHROME_SHUTDOWN_SECONDS = 3
 
 
 def safe_name(name: str) -> str:
@@ -139,6 +140,17 @@ def cleanup_old_chrome_profiles(tmp_root: Path) -> None:
             pass
 
 
+def stop_chrome(proc: subprocess.Popen) -> None:
+    if proc.poll() is not None:
+        return
+    proc.terminate()
+    try:
+        proc.wait(timeout=CHROME_SHUTDOWN_SECONDS)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait(timeout=CHROME_SHUTDOWN_SECONDS)
+
+
 def run_chrome(args: list[str]) -> None:
     if not CHROME.exists():
         raise SystemExit(f"Chrome not found: {CHROME}")
@@ -154,8 +166,10 @@ def run_chrome(args: list[str]) -> None:
         f"--user-data-dir={profile}",
         "--no-first-run",
         "--no-default-browser-check",
+        "--noerrdialogs",
         "--disable-crash-reporter",
         "--disable-breakpad",
+        "--disable-session-crashed-bubble",
         "--disable-extensions",
         "--disable-sync",
         "--disable-background-networking",
@@ -168,30 +182,32 @@ def run_chrome(args: list[str]) -> None:
         *args,
     ]
     proc = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + CHROME_WAIT_SECONDS
-    while time.time() < deadline:
-        code = proc.poll()
-        if code == 0:
-            shutil.rmtree(profile, ignore_errors=True)
-            return
-        if code is not None:
-            if expected_output and expected_output.exists() and expected_output.stat().st_size > 0:
-                shutil.rmtree(profile, ignore_errors=True)
-                return
-            raise subprocess.CalledProcessError(code, command)
-        if expected_output and expected_output.exists() and expected_output.stat().st_size > 0:
-            try:
-                code = proc.wait(timeout=CHROME_GRACE_SECONDS)
-            except subprocess.TimeoutExpired:
-                return
+    try:
+        deadline = time.time() + CHROME_WAIT_SECONDS
+        while time.time() < deadline:
+            code = proc.poll()
             if code == 0:
                 shutil.rmtree(profile, ignore_errors=True)
                 return
+            if code is not None:
+                if expected_output and expected_output.exists() and expected_output.stat().st_size > 0:
+                    return
+                raise subprocess.CalledProcessError(code, command)
+            if expected_output and expected_output.exists() and expected_output.stat().st_size > 0:
+                try:
+                    code = proc.wait(timeout=CHROME_GRACE_SECONDS)
+                except subprocess.TimeoutExpired:
+                    return
+                if code == 0:
+                    return
+                return
+            time.sleep(0.2)
+        if expected_output and expected_output.exists() and expected_output.stat().st_size > 0:
             return
-        time.sleep(0.2)
-    if expected_output and expected_output.exists() and expected_output.stat().st_size > 0:
-        return
-    raise TimeoutError("Chrome did not produce the expected output before timeout")
+        raise TimeoutError("Chrome did not produce the expected output before timeout")
+    finally:
+        stop_chrome(proc)
+        shutil.rmtree(profile, ignore_errors=True)
 
 
 def main() -> None:

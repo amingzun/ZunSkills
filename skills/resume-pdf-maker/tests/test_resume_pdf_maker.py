@@ -108,6 +108,8 @@ class ResumePdfMakerTest(unittest.TestCase):
         self.assertIn("--headless=new", command)
         self.assertIn("--disable-crash-reporter", command)
         self.assertIn("--disable-breakpad", command)
+        self.assertIn("--disable-session-crashed-bubble", command)
+        self.assertIn("--noerrdialogs", command)
         self.assertIn("--no-first-run", command)
         self.assertTrue(any(arg.startswith("--user-data-dir=") for arg in command))
         self.assertIn("--print-to-pdf=/tmp/out.pdf", command)
@@ -118,7 +120,7 @@ class ResumePdfMakerTest(unittest.TestCase):
         path = resume_pdf_maker.expected_output_path(["--print-to-pdf=/tmp/out.pdf", "file:///tmp/in.html"])
         self.assertEqual(path, pathlib.Path("/tmp/out.pdf"))
 
-    def test_run_chrome_returns_without_killing_after_pdf_exists(self):
+    def test_run_chrome_stops_process_after_pdf_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             chrome = pathlib.Path(tmp) / "chrome"
             chrome.write_text("", encoding="utf-8")
@@ -126,13 +128,29 @@ class ResumePdfMakerTest(unittest.TestCase):
             out.write_bytes(b"%PDF-1.4")
             proc = mock.Mock()
             proc.poll.return_value = None
-            proc.wait.side_effect = resume_pdf_maker.subprocess.TimeoutExpired(cmd=["chrome"], timeout=1)
+            proc.wait.side_effect = [
+                resume_pdf_maker.subprocess.TimeoutExpired(cmd=["chrome"], timeout=1),
+                0,
+            ]
             with mock.patch.object(resume_pdf_maker, "CHROME", chrome), mock.patch(
                 "resume_pdf_maker.subprocess.Popen", return_value=proc
             ), mock.patch.object(resume_pdf_maker, "CHROME_GRACE_SECONDS", 0.01):
                 resume_pdf_maker.run_chrome([f"--print-to-pdf={out}", "file:///tmp/in.html"])
+            proc.terminate.assert_called_once()
             self.assertFalse(proc.kill.called)
-            self.assertFalse(proc.terminate.called)
+
+    def test_stop_chrome_kills_when_terminate_times_out(self):
+        proc = mock.Mock()
+        proc.poll.return_value = None
+        proc.wait.side_effect = [
+            resume_pdf_maker.subprocess.TimeoutExpired(cmd=["chrome"], timeout=1),
+            0,
+        ]
+
+        resume_pdf_maker.stop_chrome(proc)
+
+        proc.terminate.assert_called_once()
+        proc.kill.assert_called_once()
 
 
 if __name__ == "__main__":
