@@ -1,0 +1,4 @@
+interface:
+  display_name: "明尊简历PDF生成器"
+  short_description: "确认内容、预览三版设计并导出简历PDF"
+  default_prompt: "Use $resume-pdf-maker to create a polished resume PDF from my content or existing resume file."
