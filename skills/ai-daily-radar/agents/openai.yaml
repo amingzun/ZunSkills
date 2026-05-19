@@ -1,0 +1,4 @@
+interface:
+  display_name: "AI Daily Radar"
+  short_description: "Generate a daily AI news radar from global sources."
+  default_prompt: "Use ai-daily-radar to generate todays AI Daily Radar Markdown report."

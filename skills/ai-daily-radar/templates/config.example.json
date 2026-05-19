@@ -1,0 +1,138 @@
+{
+  "output_dir": "outputs",
+  "max_items": 10,
+  "lookback_hours": 48,
+  "timeout_seconds": 8,
+  "user_agent": "ai-daily-radar/0.1 (+https://github.com/HackerNews/API)",
+  "title_translation": {
+    "enabled": true,
+    "provider": "google_translate_unofficial",
+    "source_language": "en",
+    "target_language": "zh-CN",
+    "workers": 5,
+    "cache_file": "outputs/title_translation_cache.json"
+  },
+  "content_summary": {
+    "enabled": true,
+    "provider": "openai",
+    "model": "gpt-4.1-mini",
+    "style_version": "plain_summary_v4",
+    "workers": 4,
+    "cache_file": "outputs/content_summary_cache.json"
+  },
+  "email_delivery": {
+    "enabled": false,
+    "smtp_host": "smtp.qq.com",
+    "smtp_port": 465,
+    "use_ssl": true,
+    "subject_prefix": "AI Daily Radar"
+  },
+  "keywords": [
+    "artificial intelligence",
+    "llm",
+    "large language model",
+    "agent",
+    "agents",
+    "rag",
+    "inference",
+    "model",
+    "benchmark",
+    "openai",
+    "anthropic",
+    "claude",
+    "gemini",
+    "deepmind",
+    "meta ai",
+    "llama",
+    "qwen",
+    "deepseek",
+    "mistral",
+    "hugging face",
+    "diffusion",
+    "multimodal",
+    "reasoning",
+    "coding",
+    "copilot",
+    "mcp",
+    "llama.cpp",
+    "vllm",
+    "ollama",
+    "gguf",
+    "mlx",
+    "gemma",
+    "jetson",
+    "mtp"
+  ],
+  "sources": {
+    "hacker_news": {
+      "enabled": true,
+      "story_lists": ["topstories", "newstories", "beststories"],
+      "limit_per_list": 25,
+      "max_items_total": 45,
+      "workers": 12
+    },
+    "reddit": {
+      "enabled": true,
+      "subreddits": ["LocalLLaMA", "MachineLearning"],
+      "sorts": ["hot", "new"],
+      "limit_per_feed": 25,
+      "workers": 4
+    },
+    "rss": {
+      "enabled": true,
+      "workers": 8,
+      "feeds": [
+        {
+          "name": "arXiv cs.AI",
+          "url": "https://export.arxiv.org/rss/cs.AI",
+          "priority": 1.0
+        },
+        {
+          "name": "arXiv cs.CL",
+          "url": "https://export.arxiv.org/rss/cs.CL",
+          "priority": 1.1
+        },
+        {
+          "name": "arXiv cs.LG",
+          "url": "https://export.arxiv.org/rss/cs.LG",
+          "priority": 1.0
+        },
+        {
+          "name": "OpenAI News",
+          "url": "https://openai.com/news/rss.xml",
+          "priority": 1.6
+        },
+        {
+          "name": "Google DeepMind Blog",
+          "url": "https://deepmind.google/discover/blog/rss.xml",
+          "priority": 1.5
+        },
+        {
+          "name": "Anthropic News",
+          "url": "https://www.anthropic.com/news/rss.xml",
+          "priority": 1.5
+        },
+        {
+          "name": "Hugging Face Blog",
+          "url": "https://huggingface.co/blog/feed.xml",
+          "priority": 1.3
+        },
+        {
+          "name": "The Rundown AI",
+          "url": "https://www.therundown.ai/feed",
+          "priority": 0.8
+        }
+      ]
+    },
+    "github": {
+      "enabled": true,
+      "trending_url": "https://github.com/trending?since=daily",
+      "limit": 30
+    },
+    "hugging_face_papers": {
+      "enabled": true,
+      "url": "https://huggingface.co/papers",
+      "limit": 30
+    }
+  }
+}
