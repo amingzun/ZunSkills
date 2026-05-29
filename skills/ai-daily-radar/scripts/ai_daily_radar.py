@@ -12,12 +12,13 @@ import os
 import re
 import smtplib
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import EmailMessage
 from pathlib import Path
 from typing import Any
@@ -35,17 +36,30 @@ class Candidate:
     heat: float
     heat_label: str
     priority: float
+    source_type: str = "news"
     snippet: str = ""
     title_zh: str = ""
     summary_zh: str = ""
+    metrics: dict[str, Any] = field(default_factory=dict)
+    score_reasons: list[str] = field(default_factory=list)
 
     @property
     def score(self) -> float:
-        age_penalty = 0.0
+        score = 2.0 + self.priority
         if self.published:
             age_hours = max(0.0, (now_utc() - self.published).total_seconds() / 3600)
-            age_penalty = min(30.0, age_hours * 0.35)
-        return self.priority * 25 + self.heat - age_penalty + keyword_score(self.title + " " + self.snippet)
+            score += max(0.0, 1.4 - age_hours / 48)
+        else:
+            score += 0.5
+        score += min(2.0, (self.heat ** 0.5) / 15)
+        score += min(1.5, keyword_score(self.title + " " + self.snippet) / 10)
+        if self.source_type == "github_repo":
+            delta = float(self.metrics.get("stars_delta_24h") or 0)
+            score += min(2.2, delta / 40)
+            score += min(0.4, float(self.metrics.get("stars") or 0) / 30000)
+            if delta <= 0 and self.source.startswith("GitHub Search"):
+                score -= 1.2
+        return round(min(10.0, score), 2)
 
 
 def now_utc() -> dt.datetime:
@@ -340,29 +354,166 @@ def github_trending_candidates(config: dict[str, Any]) -> list[Candidate]:
     source_config = config["sources"].get("github", {})
     if not source_config.get("enabled"):
         return []
+    candidates: list[Candidate] = []
+    repo_records: dict[str, dict[str, Any]] = {}
     try:
         page = fetch_text(source_config["trending_url"], config["timeout_seconds"], config["user_agent"])
     except (urllib.error.URLError, TimeoutError):
-        return []
-    candidates: list[Candidate] = []
-    pattern = re.compile(r'<h2 class="h3 lh-condensed">\s*<a href="([^"]+)">\s*(.*?)\s*</a>', re.S)
-    for href, raw_title in pattern.findall(page)[: source_config.get("limit", 30)]:
-        title = clean_text(strip_tags(raw_title)).replace(" / ", "/")
-        if not title:
+        page = ""
+    article_pattern = re.compile(r"<article.*?</article>", re.S)
+    repo_pattern = re.compile(r'<h2 class="h3 lh-condensed">\s*<a href="([^"]+)">\s*(.*?)\s*</a>', re.S)
+    desc_pattern = re.compile(r'<p class="col-9 color-fg-muted my-1 pr-4">(.*?)</p>', re.S)
+    stars_today_pattern = re.compile(r"([0-9,]+)\s+stars?\s+today")
+    stars_pattern = re.compile(r'<a[^>]+stargazers[^>]*>\s*([0-9,]+)\s*</a>', re.S)
+    for article in article_pattern.findall(page)[: source_config.get("limit", 50)]:
+        repo_match = repo_pattern.search(article)
+        if not repo_match:
             continue
+        href, raw_title = repo_match.groups()
+        full_name = clean_text(strip_tags(raw_title)).replace(" / ", "/")
+        if not full_name or "/" not in full_name:
+            continue
+        desc_match = desc_pattern.search(article)
+        description = clean_text(strip_tags(desc_match.group(1))) if desc_match else ""
+        stars_today_match = stars_today_pattern.search(clean_text(strip_tags(article)))
+        stars_match = stars_pattern.search(article)
+        stars = parse_int(stars_match.group(1)) if stars_match else 0
+        stars_delta = parse_int(stars_today_match.group(1)) if stars_today_match else 0
         repo_url = urllib.parse.urljoin("https://github.com", href.strip())
+        repo_records[full_name] = {
+            "full_name": full_name,
+            "url": repo_url,
+            "description": description,
+            "stars": stars,
+            "stars_delta_24h": stars_delta,
+            "source": "GitHub Trending",
+        }
+
+    if source_config.get("search_enabled", True):
+        for record in github_search_records(config, source_config):
+            repo_records.setdefault(record["full_name"], record)
+
+    enrich_github_growth(repo_records, source_config)
+    save_github_snapshot(repo_records, source_config)
+
+    for record in repo_records.values():
+        if not is_ai_repo_record(record, config.get("keywords", [])):
+            continue
+        stars = int(record.get("stars") or 0)
+        delta = int(record.get("stars_delta_24h") or 0)
+        description = clean_text(record.get("description") or "")
+        heat = float(delta * 4 + min(stars, 50000) / 2000)
+        label_bits = []
+        if stars:
+            label_bits.append(f"{stars} stars")
+        if delta:
+            label_bits.append(f"+{delta} stars/24h")
+        heat_label = ", ".join(label_bits) if label_bits else "GitHub AI repo"
         candidates.append(
             Candidate(
-                title=f"GitHub Trending: {title}",
-                url=repo_url,
-                source="GitHub Trending",
-                published=None,
-                heat=20.0,
-                heat_label="daily trending repo",
-                priority=1.0,
+                title=f"GitHub AI Repo: {record['full_name']}",
+                url=record["url"],
+                source=record.get("source", "GitHub Search"),
+                source_type="github_repo",
+                published=parse_date(record.get("pushed_at")),
+                heat=heat,
+                heat_label=heat_label,
+                priority=1.45,
+                snippet=description,
+                metrics={
+                    "stars": stars,
+                    "stars_delta_24h": delta,
+                    "forks": int(record.get("forks") or 0),
+                    "language": record.get("language") or "",
+                    "topics": record.get("topics") or [],
+                },
             )
         )
     return candidates
+
+
+def github_search_records(config: dict[str, Any], source_config: dict[str, Any]) -> list[dict[str, Any]]:
+    records: list[dict[str, Any]] = []
+    pushed_after = (dt.datetime.now().date() - dt.timedelta(days=14)).isoformat()
+    created_after = (dt.datetime.now().date() - dt.timedelta(days=int(source_config.get("created_within_days", 180)))).isoformat()
+    limit = int(source_config.get("search_limit_per_topic", 10))
+    headers_user_agent = config["user_agent"]
+    for topic in source_config.get("topics", []):
+        query = f'topic:{topic} pushed:>={pushed_after} created:>={created_after} stars:>10'
+        params = urllib.parse.urlencode({"q": query, "sort": "stars", "order": "desc", "per_page": limit})
+        url = f"https://api.github.com/search/repositories?{params}"
+        try:
+            payload = json.loads(fetch_text(url, config["timeout_seconds"], headers_user_agent))
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+            continue
+        for item in payload.get("items", []):
+            full_name = item.get("full_name")
+            if not full_name:
+                continue
+            records.append(
+                {
+                    "full_name": full_name,
+                    "url": item.get("html_url") or f"https://github.com/{full_name}",
+                    "description": item.get("description") or "",
+                    "stars": int(item.get("stargazers_count") or 0),
+                    "forks": int(item.get("forks_count") or 0),
+                    "language": item.get("language") or "",
+                    "topics": item.get("topics") or [],
+                    "pushed_at": item.get("pushed_at") or "",
+                    "source": f"GitHub Search/new-topic:{topic}",
+                }
+            )
+    return records
+
+
+def enrich_github_growth(repo_records: dict[str, dict[str, Any]], source_config: dict[str, Any]) -> None:
+    snapshot = load_github_snapshot(source_config)
+    previous = snapshot.get("repos", {})
+    for full_name, record in repo_records.items():
+        current_stars = int(record.get("stars") or 0)
+        if record.get("stars_delta_24h"):
+            continue
+        previous_stars = int(previous.get(full_name, {}).get("stars") or 0)
+        record["stars_delta_24h"] = max(0, current_stars - previous_stars) if previous_stars else 0
+
+
+def load_github_snapshot(source_config: dict[str, Any]) -> dict[str, Any]:
+    return load_json_file(ROOT / source_config.get("snapshot_file", "outputs/github_repo_snapshots.json"))
+
+
+def save_github_snapshot(repo_records: dict[str, dict[str, Any]], source_config: dict[str, Any]) -> None:
+    path = ROOT / source_config.get("snapshot_file", "outputs/github_repo_snapshots.json")
+    snapshot = {
+        "date": dt.datetime.now().date().isoformat(),
+        "repos": {
+            full_name: {
+                "stars": int(record.get("stars") or 0),
+                "url": record.get("url") or "",
+                "description": record.get("description") or "",
+            }
+            for full_name, record in sorted(repo_records.items())
+        },
+    }
+    write_json_file(path, snapshot)
+
+
+def is_ai_repo_record(record: dict[str, Any], keywords: list[str]) -> bool:
+    text = " ".join(
+        [
+            record.get("full_name") or "",
+            record.get("description") or "",
+            record.get("language") or "",
+            " ".join(record.get("topics") or []),
+        ]
+    ).lower()
+    return any(keyword_matches(text, keyword) for keyword in keywords)
+
+
+def parse_int(value: str) -> int:
+    try:
+        return int(value.replace(",", "").strip())
+    except (AttributeError, ValueError):
+        return 0
 
 
 def hugging_face_papers_candidates(config: dict[str, Any]) -> list[Candidate]:
@@ -410,6 +561,59 @@ def dedupe(candidates: list[Candidate]) -> list[Candidate]:
         if current is None or candidate.score > current.score:
             best[key] = candidate
     return list(best.values())
+
+
+def assign_score_reasons(candidates: list[Candidate]) -> None:
+    for candidate in candidates:
+        reasons: list[str] = []
+        if candidate.source_type == "github_repo":
+            delta = int(candidate.metrics.get("stars_delta_24h") or 0)
+            stars = int(candidate.metrics.get("stars") or 0)
+            if delta:
+                reasons.append(f"GitHub star 增长较快：24h +{delta}")
+            if stars:
+                reasons.append(f"已有基础关注度：{stars} stars")
+            topics = candidate.metrics.get("topics") or []
+            if topics:
+                reasons.append("AI topic 命中：" + ", ".join(str(topic) for topic in topics[:4]))
+        if candidate.published:
+            age_hours = max(0.0, (now_utc() - candidate.published).total_seconds() / 3600)
+            if age_hours <= 24:
+                reasons.append("24 小时内新内容")
+            elif age_hours <= 48:
+                reasons.append("48 小时内新内容")
+        if candidate.heat > 100:
+            reasons.append(f"社区热度高：{candidate.heat_label}")
+        elif candidate.heat_label:
+            reasons.append(candidate.heat_label)
+        matched = matched_keywords(candidate)
+        if matched:
+            reasons.append("AI 相关信号：" + ", ".join(matched[:5]))
+        if candidate.source in {"OpenAI News", "Anthropic News", "Google DeepMind Blog"}:
+            reasons.append("官方来源")
+        candidate.score_reasons = reasons[:5]
+
+
+def matched_keywords(candidate: Candidate) -> list[str]:
+    text = f"{candidate.title} {candidate.snippet}".lower()
+    keywords = [
+        "agent",
+        "llm",
+        "model",
+        "qwen",
+        "deepseek",
+        "claude",
+        "openai",
+        "anthropic",
+        "mcp",
+        "rag",
+        "inference",
+        "benchmark",
+        "llama.cpp",
+        "vllm",
+        "github",
+    ]
+    return [keyword for keyword in keywords if keyword_matches(text, keyword)]
 
 
 def translate_titles(candidates: list[Candidate], config: dict[str, Any]) -> None:
@@ -637,7 +841,9 @@ def write_report(candidates: list[Candidate], config: dict[str, Any]) -> Path:
                 "",
                 f"来源：{candidate.source}",
                 f"链接：{candidate.url}",
-                f"热度：{candidate.heat_label}; score {candidate.score:.1f}",
+                f"推荐分：{candidate.score:.1f}/10",
+                f"热度：{candidate.heat_label}",
+                f"推荐理由：{'；'.join(candidate.score_reasons) if candidate.score_reasons else '综合热度、时效和 AI 相关性排序'}",
                 "",
                 "### 内容摘要",
                 candidate.summary_zh or fallback_summary(candidate, config),
@@ -712,7 +918,7 @@ def load_private_email_env() -> None:
             os.environ[key] = value
 
 
-def collect(config: dict[str, Any]) -> list[Candidate]:
+def collect(config: dict[str, Any]) -> tuple[list[Candidate], list[dict[str, Any]]]:
     collectors = [
         hn_candidates,
         reddit_candidates,
@@ -721,18 +927,118 @@ def collect(config: dict[str, Any]) -> list[Candidate]:
         hugging_face_papers_candidates,
     ]
     all_candidates: list[Candidate] = []
+    health: list[dict[str, Any]] = []
+
+    def run_collector(collector: Any) -> tuple[str, list[Candidate], dict[str, Any]]:
+        started = time.time()
+        name = collector.__name__
+        try:
+            results = collector(config)
+            return (
+                name,
+                results,
+                {
+                    "source": name,
+                    "status": "ok",
+                    "candidates": len(results),
+                    "elapsed_seconds": round(time.time() - started, 2),
+                },
+            )
+        except Exception as error:
+            return (
+                name,
+                [],
+                {
+                    "source": name,
+                    "status": "error",
+                    "error": str(error),
+                    "candidates": 0,
+                    "elapsed_seconds": round(time.time() - started, 2),
+                },
+            )
+
     with ThreadPoolExecutor(max_workers=len(collectors)) as pool:
-        futures = [pool.submit(collector, config) for collector in collectors]
+        futures = [pool.submit(run_collector, collector) for collector in collectors]
         for future in as_completed(futures):
-            try:
-                all_candidates.extend(future.result())
-            except Exception as error:
-                print(f"collector skipped: {error}", file=sys.stderr)
+            name, results, health_item = future.result()
+            if health_item["status"] == "error":
+                print(f"collector skipped: {name}: {health_item.get('error')}", file=sys.stderr)
+            all_candidates.extend(results)
+            health.append(health_item)
     filtered = [item for item in all_candidates if is_ai_related(item, config["keywords"])]
     lookback = dt.timedelta(hours=float(config.get("lookback_hours", 48)))
     cutoff = now_utc() - lookback
     recent = [item for item in filtered if item.published is None or item.published >= cutoff]
-    return sorted(dedupe(recent), key=lambda item: item.score, reverse=True)
+    deduped = sorted(dedupe(recent), key=lambda item: item.score, reverse=True)
+    assign_score_reasons(deduped)
+    health.append(
+        {
+            "source": "pipeline",
+            "status": "ok",
+            "raw_candidates": len(all_candidates),
+            "ai_related": len(filtered),
+            "recent": len(recent),
+            "deduped": len(deduped),
+        }
+    )
+    return deduped, health
+
+
+def write_source_health(health: list[dict[str, Any]], config: dict[str, Any]) -> Path:
+    output_dir = ROOT / config.get("output_dir", "outputs")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    today = dt.datetime.now().date().isoformat()
+    path = output_dir / f"{today}-source-health.json"
+    write_json_file(path, {"date": today, "sources": health})
+    return path
+
+
+def select_output_candidates(candidates: list[Candidate], config: dict[str, Any], max_candidates: int, max_items: int) -> list[Candidate]:
+    pool = candidates[:max_candidates]
+    caps = config.get("diversity_caps", {})
+    if not caps.get("enabled", True):
+        return pool[:max_items]
+
+    selected: list[Candidate] = []
+    counts: dict[str, int] = {}
+    skipped: list[Candidate] = []
+    for candidate in pool:
+        group = source_group(candidate)
+        cap = int(caps.get(group, caps.get("other", max_items)))
+        if counts.get(group, 0) < cap:
+            selected.append(candidate)
+            counts[group] = counts.get(group, 0) + 1
+        else:
+            skipped.append(candidate)
+        if len(selected) >= max_items:
+            break
+
+    if len(selected) < max_items:
+        selected_urls = {candidate.url for candidate in selected}
+        for candidate in skipped:
+            if candidate.url in selected_urls:
+                continue
+            selected.append(candidate)
+            if len(selected) >= max_items:
+                break
+    return selected[:max_items]
+
+
+def source_group(candidate: Candidate) -> str:
+    source = candidate.source.lower()
+    if candidate.source_type == "github_repo":
+        return "github_repo"
+    if "arxiv" in source or "hugging face daily papers" in source:
+        return "research"
+    if "hacker news" in source:
+        return "hacker_news"
+    if source.startswith("r/"):
+        return "reddit"
+    if any(name in source for name in ["openai", "anthropic", "deepmind", "hugging face blog"]):
+        return "official"
+    if any(name in source for name in ["rundown", "tldr", "ben"]):
+        return "news"
+    return "other"
 
 
 def main() -> int:
@@ -743,16 +1049,20 @@ def main() -> int:
     args = parser.parse_args()
 
     config = load_config(Path(args.config))
-    max_items = args.max_items or int(config.get("max_items", 10))
-    candidates = collect(config)[:max_items]
+    max_candidates = int(config.get("max_candidates", 100))
+    max_items = args.max_items or int(config.get("max_items", 50))
+    candidates, health = collect(config)
+    candidates = select_output_candidates(candidates, config, max_candidates, max_items)
     if not candidates:
         print("No AI-related candidates found.", file=sys.stderr)
         return 1
     translate_titles(candidates, config)
     summarize_items(candidates, config)
     output_path = write_report(candidates, config)
+    health_path = write_source_health(health, config)
     email_sent = send_email_report(output_path, config, force=args.send_email)
     print(f"Report: {output_path}")
+    print(f"Source health: {health_path}")
     if email_sent:
         print("Email: sent")
     for index, candidate in enumerate(candidates, start=1):

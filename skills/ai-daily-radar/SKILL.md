@@ -7,7 +7,7 @@ description: Generate a daily AI news radar from global English-language sources
 
 ## Overview
 
-Generate a concise Markdown briefing of the day's most important AI updates for a technical builder audience. The report focuses on signal, not volume: source title, Chinese title translation, link, heat signal, and a plain Chinese summary with brief explanations for uncommon AI terms.
+Generate a ranked Markdown briefing of the day's most important AI updates for a technical builder audience. The report focuses on signal, not volume: broad source collection, GitHub fast-growing AI repos, source health, score reasons, Chinese title translation, and a plain Chinese summary with brief explanations for uncommon AI terms.
 
 ## Quick Start
 
@@ -17,7 +17,7 @@ Run the bundled script from this skill directory:
 python3 scripts/ai_daily_radar.py --config templates/config.example.json
 ```
 
-By default it writes Markdown to `outputs/YYYY-MM-DD-ai-daily-radar.md` inside this skill directory and prints a short summary.
+By default it collects up to 100 candidates, writes the top 50 to `outputs/YYYY-MM-DD-ai-daily-radar.md`, writes source health to `outputs/YYYY-MM-DD-source-health.json`, and prints a short summary.
 
 Use only the local shell/Python script for execution. Do not use Computer Use, desktop automation, browser automation, GUI apps, or MCP tools to run this skill.
 
@@ -26,8 +26,8 @@ Use only the local shell/Python script for execution. Do not use Computer Use, d
 1. Use `scripts/ai_daily_radar.py` unless the user asks for custom analysis.
 2. Keep the run lightweight: no HTML, no login-gated sources. Email is optional through SMTP only.
 3. Prefer official APIs and public RSS/JSON endpoints over brittle scraping.
-4. Produce exactly 10 items unless the user asks for a different count.
-5. In the final response, include the report path and the 10 titles with Chinese title translations.
+4. Collect up to 100 candidates and output the top 50 unless the user asks for a different count.
+5. In the final response, include the report path and the selected titles with Chinese title translations.
 
 ## Report Format
 
@@ -37,7 +37,8 @@ Each item should contain:
 - Chinese title translation
 - Source name
 - URL
-- Heat signal, such as points, comments, upvotes, stars, or source priority
+- Recommendation score and score reasons
+- Heat signal, such as points, comments, upvotes, GitHub stars, or 24h star growth
 - Plain Chinese content summary that does not repeat the title or use labels like "essence" / "core information"; briefly explain uncommon terms, acronyms, tools, benchmarks, or model names when they appear
 
 ## Source Strategy
@@ -51,6 +52,7 @@ Use a broad AI scope. Do not restrict the report to models only. Include:
 - Official company/lab announcements
 - Product and market signals
 - Safety, policy, legal, and commercial infrastructure updates
+- Fast-growing GitHub AI repositories and tools
 
 Default source families:
 
@@ -74,8 +76,27 @@ Rank candidates with a simple weighted score:
 - Source quality: official source and respected technical community posts score higher
 - Builder relevance: practical impact for developers, AI product builders, or technical founders
 - Novelty: new release, benchmark, project, method, or controversy
+- GitHub repository growth: 24h star delta, existing stars, AI topics, and recent activity
 
 Downrank duplicates, thin marketing posts, generic listicles, and items with no clear developer relevance.
+
+## V2 Product Principles
+
+Borrow the useful parts from products like Horizon, agents-radar, AI-news-Automation, and GitHub trend trackers:
+
+- Gather broadly, then rank aggressively.
+- Explain why an item is recommended, not just what it is.
+- Treat GitHub star velocity as an early signal for AI tools.
+- Track source health on every run so failures are visible.
+- Keep markdown output as the canonical artifact until a public web product is designed.
+
+## Later Product Planning
+
+Record these ideas but do not implement them in the current script path:
+
+- Personal `interest_profile.md` for user-specific taste.
+- Public Web UI / GitHub Pages / browsable archive.
+- Dedicated model intelligence module for model pricing, endpoints, benchmark movement, and capability changes.
 
 ## Scheduled Use
 

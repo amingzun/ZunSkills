@@ -1,6 +1,17 @@
 {
   "output_dir": "outputs",
-  "max_items": 10,
+  "max_candidates": 100,
+  "max_items": 50,
+  "diversity_caps": {
+    "enabled": true,
+    "github_repo": 18,
+    "research": 18,
+    "hacker_news": 12,
+    "reddit": 14,
+    "official": 8,
+    "news": 12,
+    "other": 8
+  },
   "lookback_hours": 48,
   "timeout_seconds": 8,
   "user_agent": "ai-daily-radar/0.1 (+https://github.com/HackerNews/API)",
@@ -127,7 +138,23 @@
     "github": {
       "enabled": true,
       "trending_url": "https://github.com/trending?since=daily",
-      "limit": 30
+      "limit": 50,
+      "search_enabled": true,
+      "search_limit_per_topic": 10,
+      "created_within_days": 180,
+      "snapshot_file": "outputs/github_repo_snapshots.json",
+      "topics": [
+        "llm",
+        "ai-agent",
+        "rag",
+        "inference",
+        "mcp",
+        "vector-database",
+        "machine-learning",
+        "generative-ai",
+        "llama",
+        "ai-coding"
+      ]
     },
     "hugging_face_papers": {
       "enabled": true,
