@@ -7,7 +7,7 @@ description: Generate a daily AI news radar from global English-language sources
 
 ## Overview
 
-Generate a ranked AI news reading brief from global English-language sources. The report focuses on helping a reader quickly understand what happened and why the item is worth opening: broad source collection, GitHub fast-growing AI repos, Chinese title translation, one-sentence key point, plain Chinese summary, and brief explanations for uncommon AI terms.
+Generate a ranked AI news reading brief from global English-language sources. The report is written from an "AI news editor" point of view: it should help a reader quickly understand what happened, why it matters, whether it is worth opening, and which terms need explanation. Source collection and ranking still happen in the background; the reader-facing experience should feel like an editor has read and judged the item.
 
 ## Quick Start
 
@@ -43,25 +43,29 @@ Do not return only plain text paths for the main report.
 
 ## Report Format
 
-Each Markdown item should read like a compact news card:
+Each Markdown item should read like a compact editor card:
 
 - Original title
 - Chinese title translation
 - Source name and reader-facing source type
 - URL
 - Recommendation score as light metadata
-- One-sentence key point
-- Plain Chinese key summary that does not repeat the title or use labels like "essence" / "core information"
-- Brief term explanations for uncommon AI terms, acronyms, tools, benchmarks, or model names when they appear
+- `主编一句话`: one human editorial judgment that does not repeat the title
+- `这条在说什么`: 2-4 plain Chinese sentences explaining the event, project, paper, or discussion
+- `主编怎么看`: a judgment about impact, reliability, audience, or why it matters
+- `读者行动`: what the reader should inspect, compare, try, or ignore next
+- `你需要知道的词`: only terms that affect comprehension
 
 Do not make source health, trend charts, or pipeline diagnostics part of the reader-facing report. Those are backstage operational artifacts.
+
+OpenAI-powered editorial review is the preferred path. If `OPENAI_API_KEY` is missing or the OpenAI call fails, the script must mark the item with `summary_status` such as `fallback_no_openai_key` so degraded output is visible instead of pretending to be AI-edited.
 
 ## WebUI-Ready Data
 
 The script also writes `outputs/YYYY-MM-DD-items.json` for a future news-style WebUI. Each item includes:
 
 - Stable item id, rank, English title, Chinese title, URL, source, source type, score
-- One-sentence key point and full Chinese summary
+- Editor fields: `editor_note`, `what_happened`, `why_it_matters`, `reader_takeaway`, and `summary_status`
 - Tags such as model, Agent, RAG, paper, benchmark, open-source project, inference/deployment, or safety/policy
 - Structured term explanations
 - Internal score reasons and heat labels for sorting/debugging, not as primary UI content

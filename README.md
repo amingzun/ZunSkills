@@ -5,7 +5,7 @@
 ## Skills
 
 - `resume-pdf-maker`：明尊简历PDF生成器。用于从简历内容或已有文件生成可确认、可预览、可导出的简历 PDF。
-- `ai-daily-radar`：每日 AI 资讯雷达。每天从国外 AI 社区、论文、开源项目、官方发布、技术资讯和 GitHub 快速增长 AI 工具库中收集最多 100 条候选，按推荐分和来源多样性输出 Top 50 阅读型 Markdown 日报，并额外生成面向未来 WebUI 的 `items.json`。日报包含英文标题、中文标题、一句话重点、关键摘要、术语解释和来源类型；支持可选 QQ 邮箱 SMTP 发送。
+- `ai-daily-radar`：每日 AI 资讯雷达。每天从国外 AI 社区、论文、开源项目、官方发布、技术资讯和 GitHub 快速增长 AI 工具库中收集最多 100 条候选，按推荐分和来源多样性输出 Top 50 阅读型 Markdown 日报，并额外生成面向未来 WebUI 的 `items.json`。日报以“AI 资讯主编”视角输出主编一句话、这条在说什么、主编怎么看、读者行动和术语解释；支持可选 QQ 邮箱 SMTP 发送。
 
 ## Structure
 
@@ -46,8 +46,8 @@ python3 ~/.codex/skills/ai-daily-radar/scripts/ai_daily_radar.py \
 
 输出文件默认位于 `~/.codex/skills/ai-daily-radar/outputs/`：
 
-- `YYYY-MM-DD-ai-daily-radar.md`：适合直接阅读的中文 AI 资讯日报。
-- `YYYY-MM-DD-items.json`：面向后续资讯流 WebUI 的结构化数据。
+- `YYYY-MM-DD-ai-daily-radar.md`：适合直接阅读的中文 AI 资讯日报，按主编点评卡片组织。
+- `YYYY-MM-DD-items.json`：面向后续资讯流 WebUI 的结构化数据，包含 `editor_note`、`what_happened`、`why_it_matters`、`reader_takeaway` 和 `summary_status`。
 - `YYYY-MM-DD-source-health.json`：后台排查用的来源健康信息，不作为读者主界面内容。
 
 如需邮件发送，在本机创建私有配置文件 `~/.codex/ai-daily-radar-email.env`，不要把授权码提交到仓库：

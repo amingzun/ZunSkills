@@ -27,9 +27,14 @@
     "enabled": true,
     "provider": "openai",
     "model": "gpt-4.1-mini",
-    "style_version": "reader_summary_v7",
+    "style_version": "editorial_review_v3",
     "workers": 4,
     "cache_file": "outputs/content_summary_cache.json"
+  },
+  "article_context": {
+    "enabled": true,
+    "workers": 8,
+    "max_chars": 5000
   },
   "reader_output": {
     "enabled": true,

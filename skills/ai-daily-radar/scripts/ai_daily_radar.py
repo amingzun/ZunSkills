@@ -39,9 +39,15 @@ class Candidate:
     priority: float
     source_type: str = "news"
     snippet: str = ""
+    article_context: str = ""
     title_zh: str = ""
     summary_zh: str = ""
     one_liner: str = ""
+    editor_note: str = ""
+    what_happened: str = ""
+    why_it_matters: str = ""
+    reader_takeaway: str = ""
+    summary_status: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
     score_reasons: list[str] = field(default_factory=list)
 
@@ -658,6 +664,25 @@ def clean_title_translation(title: str) -> str:
     return title
 
 
+def clean_ai_chinese(text: str) -> str:
+    replacements = {
+        "法学硕士": "大语言模型",
+        "克劳德·代码": "Claude Code",
+        "克劳德代码": "Claude Code",
+        "人工智能命令": "AI 命令",
+        "许可疲劳": "权限疲劳",
+        "代理利用": "Agent 使用",
+        "代理任务": "Agent 任务",
+        "代理方法": "Agent 方法",
+        "代理技能": "Agent 技能",
+        "多代理": "多 Agent",
+    }
+    for source, target in replacements.items():
+        text = text.replace(source, target)
+    text = re.sub(r"\s+-\s+[^。！？]{0,100}(加载时出错|请重新加载此页面)[^。！？]*[。.]?", "", text)
+    return clean_text(text)
+
+
 def translate_title_google(title: str, translation_config: dict[str, Any], config: dict[str, Any]) -> str:
     return translate_text_google(
         title,
@@ -680,7 +705,76 @@ def translate_text_google(text: str, source_language: str, target_language: str,
     url = f"https://translate.googleapis.com/translate_a/single?{params}"
     payload = json.loads(fetch_text(url, int(config.get("timeout_seconds", 8)), config["user_agent"]))
     translated = "".join(segment[0] for segment in payload[0] if segment and segment[0])
-    return clean_text(translated)
+    return clean_ai_chinese(translated)
+
+
+def enrich_article_context(candidates: list[Candidate], config: dict[str, Any]) -> None:
+    context_config = config.get("article_context", {})
+    if not context_config.get("enabled", True):
+        return
+    targets = [candidate for candidate in candidates if needs_article_context(candidate)]
+    if not targets:
+        return
+
+    def fetch(candidate: Candidate) -> tuple[Candidate, str]:
+        try:
+            page = fetch_text(candidate.url, int(config.get("timeout_seconds", 8)), config["user_agent"])
+            return candidate, extract_article_context(page, int(context_config.get("max_chars", 5000)))
+        except (urllib.error.URLError, TimeoutError, UnicodeDecodeError, ValueError):
+            return candidate, ""
+
+    with ThreadPoolExecutor(max_workers=int(context_config.get("workers", 8))) as pool:
+        for candidate, context in pool.map(fetch, targets):
+            if context:
+                candidate.article_context = context
+
+
+def needs_article_context(candidate: Candidate) -> bool:
+    if candidate.source_type == "github_repo":
+        return False
+    if len(candidate.snippet) < 260:
+        return True
+    return source_group(candidate) in {"hacker_news", "official", "news"}
+
+
+def extract_article_context(page: str, max_chars: int) -> str:
+    meta_parts = re.findall(
+        r'<meta[^>]+(?:name|property)=["\'](?:description|og:description|twitter:description)["\'][^>]+content=["\']([^"\']+)["\']',
+        page,
+        flags=re.I,
+    )
+    page = re.sub(r"(?is)<(script|style|noscript|svg|nav|footer|header).*?</\1>", " ", page)
+    paragraphs = re.findall(r"(?is)<p[^>]*>(.*?)</p>", page)
+    text_parts = [clean_text(strip_tags(part)) for part in meta_parts + paragraphs]
+    seen: set[str] = set()
+    useful: list[str] = []
+    for part in text_parts:
+        if len(part) < 40:
+            continue
+        if is_boilerplate_context(part):
+            continue
+        key = part[:120].lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        useful.append(part)
+        if sum(len(item) for item in useful) >= max_chars:
+            break
+    return truncate_text(" ".join(useful), max_chars)
+
+
+def is_boilerplate_context(text: str) -> bool:
+    lowered = text.lower()
+    boilerplate = [
+        "loading error",
+        "please reload this page",
+        "sign in to github",
+        "create an account on github",
+        "you signed in with another tab",
+        "skip to content",
+        "navigation menu",
+    ]
+    return any(item in lowered for item in boilerplate)
 
 
 def summarize_items(candidates: list[Candidate], config: dict[str, Any]) -> None:
@@ -692,7 +786,7 @@ def summarize_items(candidates: list[Candidate], config: dict[str, Any]) -> None
     cache = load_json_file(cache_path)
     missing = [candidate for candidate in candidates if summary_cache_key(candidate, summary_config) not in cache]
 
-    def summarize(candidate: Candidate) -> tuple[str, str]:
+    def summarize(candidate: Candidate) -> tuple[str, dict[str, Any]]:
         key = summary_cache_key(candidate, summary_config)
         if os.environ.get("OPENAI_API_KEY") and summary_config.get("provider") == "openai":
             try:
@@ -709,7 +803,7 @@ def summarize_items(candidates: list[Candidate], config: dict[str, Any]) -> None
         write_json_file(cache_path, cache)
 
     for candidate in candidates:
-        candidate.summary_zh = str(cache.get(summary_cache_key(candidate, summary_config), "")).strip()
+        apply_editor_review(candidate, cache.get(summary_cache_key(candidate, summary_config)))
 
 
 def summary_cache_key(candidate: Candidate, summary_config: dict[str, Any]) -> str:
@@ -718,26 +812,36 @@ def summary_cache_key(candidate: Candidate, summary_config: dict[str, Any]) -> s
     return re.sub(r"\s+", " ", key_source).strip()
 
 
-def summarize_with_openai(candidate: Candidate, summary_config: dict[str, Any], config: dict[str, Any]) -> str:
+def summarize_with_openai(candidate: Candidate, summary_config: dict[str, Any], config: dict[str, Any]) -> dict[str, Any]:
     prompt = (
-        "请用中文为一条 AI 资讯写一段给技术开发者看的摘要。"
-        "要求：2-3 句，直接说明内容本身，不要重复标题，不要使用“精髓”“核心信息是”“这条来自”等标签或套路化开头。"
-        "如果标题或片段里有不常见名词、缩写或项目名，请在句中用括号简短解释，例如 TTFT、MTP、llama.cpp、Jetson、Terminal-Bench。"
-        "只基于给定材料，不要编造没有出现的信息。\n\n"
+        "你是一位中文 AI 资讯主编，读者是正在学习和跟踪 AI 产品/技术的人。"
+        "请替读者读完这条资讯后给出有判断力、说人话的点评，不要像机器翻译或模板摘要。"
+        "必须只基于给定材料；如果材料不足，要坦诚说明信息不足，但仍根据标题和来源给出合理阅读线索，不要编造具体事实。"
+        "输出必须是 JSON 对象，字段为 editor_note, what_happened, why_it_matters, reader_takeaway, terms, status。"
+        "editor_note：一句主编判断，不重复标题，直接告诉读者这条为什么值得或不值得看。"
+        "what_happened：2-4 句解释这条资讯到底在说什么，尽量把背景补清楚。"
+        "why_it_matters：1-3 句点评它对开发者、产品、公司竞争、开源生态或学习路线的意义。"
+        "reader_takeaway：一句行动建议，例如应该点开看什么、暂时观望什么、和什么趋势相关。"
+        "terms：数组，每项包含 term 和 explanation，只解释影响理解的术语；没有就返回空数组。"
+        "status：ai_editorial。"
+        "中文要自然、克制、具体；避免“核心信息是”“精髓”“这条来自”等套话。\n\n"
         f"英文标题：{candidate.title}\n"
         f"中文标题：{candidate.title_zh or '无'}\n"
         f"来源：{candidate.source}\n"
+        f"来源类型：{source_label(candidate)}\n"
         f"热度：{candidate.heat_label}\n"
         f"内容片段：{candidate.snippet or '无'}\n"
+        f"原文摘录：{candidate.article_context or '无'}\n"
     )
     body = json.dumps(
         {
             "model": summary_config.get("model", "gpt-4.1-mini"),
             "messages": [
-                {"role": "system", "content": "你是一个面向 AI 开发者的信息分析助手，只基于给定材料写中文摘要。"},
+                {"role": "system", "content": "你是一个有判断力的中文 AI 资讯主编，擅长把英文 AI 资讯解释成普通读者能理解的判断。只输出 JSON。"},
                 {"role": "user", "content": prompt},
             ],
-            "temperature": 0.2,
+            "temperature": 0.35,
+            "response_format": {"type": "json_object"},
         }
     ).encode("utf-8")
     request = urllib.request.Request(
@@ -752,16 +856,103 @@ def summarize_with_openai(candidate: Candidate, summary_config: dict[str, Any], 
     )
     with urllib.request.urlopen(request, timeout=int(config.get("timeout_seconds", 8))) as response:
         payload = json.loads(response.read().decode("utf-8"))
-    return clean_text(payload["choices"][0]["message"]["content"])
+    content = payload["choices"][0]["message"]["content"]
+    review = json.loads(content)
+    return normalize_editor_review(review, "ai_editorial")
 
 
-def fallback_summary(candidate: Candidate, config: dict[str, Any] | None = None) -> str:
-    snippet = clean_text(candidate.snippet)
-    terms = explain_terms(candidate)
-    term_text = f"\n\n名词解释：{terms}。" if terms else ""
-    if snippet:
-        return f"{humanize_snippet(snippet, config)}{term_text}"
-    return f"{infer_essence_from_title(candidate)}{term_text}"
+def normalize_editor_review(review: Any, status: str) -> dict[str, Any]:
+    if isinstance(review, str):
+        review = {"what_happened": review}
+    if not isinstance(review, dict):
+        review = {}
+    terms = review.get("terms", [])
+    if not isinstance(terms, list):
+        terms = []
+    normalized_terms: list[dict[str, str]] = []
+    for item in terms:
+        if not isinstance(item, dict):
+            continue
+        term = clean_text(str(item.get("term", "")))
+        explanation = clean_text(str(item.get("explanation", "")))
+        if term and explanation:
+            normalized_terms.append({"term": term, "explanation": explanation})
+    return {
+        "editor_note": clean_text(str(review.get("editor_note", ""))),
+        "what_happened": clean_text(str(review.get("what_happened", ""))),
+        "why_it_matters": clean_text(str(review.get("why_it_matters", ""))),
+        "reader_takeaway": clean_text(str(review.get("reader_takeaway", ""))),
+        "terms": normalized_terms[:5],
+        "status": clean_text(str(review.get("status", status))) or status,
+    }
+
+
+def apply_editor_review(candidate: Candidate, data: Any) -> None:
+    review = normalize_editor_review(data, "fallback")
+    if not review["editor_note"]:
+        review["editor_note"] = infer_essence_from_title(candidate)
+    if not review["what_happened"]:
+        review["what_happened"] = review["editor_note"]
+    if not review["why_it_matters"]:
+        review["why_it_matters"] = "这条值得作为一个 AI 生态信号来读：先看它是否带来真实能力变化，再看社区反馈是否能支撑它的热度。"
+    if not review["reader_takeaway"]:
+        review["reader_takeaway"] = "建议点开原文确认细节，重点看实际能力、适用场景和限制。"
+    candidate.editor_note = review["editor_note"]
+    candidate.what_happened = review["what_happened"]
+    candidate.why_it_matters = review["why_it_matters"]
+    candidate.reader_takeaway = review["reader_takeaway"]
+    candidate.summary_status = review["status"]
+    candidate.summary_zh = review["what_happened"]
+    if review["terms"]:
+        candidate.metrics["editor_terms"] = review["terms"]
+
+
+def fallback_summary(candidate: Candidate, config: dict[str, Any] | None = None) -> dict[str, Any]:
+    source_text = clean_text(candidate.article_context or candidate.snippet)
+    status = "fallback_no_openai_key" if not os.environ.get("OPENAI_API_KEY") else "fallback_openai_error"
+    if source_text:
+        what_happened = humanize_snippet(source_text, config)
+        editor_note = infer_essence_from_title(candidate)
+    else:
+        editor_note = infer_essence_from_title(candidate)
+        what_happened = editor_note
+    why_it_matters = fallback_why_it_matters(candidate)
+    reader_takeaway = fallback_reader_takeaway(candidate)
+    return normalize_editor_review(
+        {
+            "editor_note": editor_note,
+            "what_happened": what_happened,
+            "why_it_matters": why_it_matters,
+            "reader_takeaway": reader_takeaway,
+            "terms": term_explanations(candidate),
+            "status": status,
+        },
+        status,
+    )
+
+
+def fallback_why_it_matters(candidate: Candidate) -> str:
+    group = source_group(candidate)
+    if group == "github_repo":
+        return "开源项目的价值不只看 stars，更要看它是不是解决了一个清晰痛点、是否容易试用，以及增长是否来自真实开发者需求。"
+    if group == "research":
+        return "论文类资讯要重点看问题定义和验证方式：它可能不是马上可用的产品，但会影响后续模型、Agent 或工具链方向。"
+    if group == "official":
+        return "官方发布通常意味着产品路线或治理边界发生变化，值得结合价格、能力、可用地区和开发者接口一起看。"
+    if group in {"hacker_news", "reddit"}:
+        return "社区热帖的价值在于暴露真实使用感受和争议点，适合用来判断一个方向是否正在形成共识。"
+    return "这类资讯适合作为 AI 生态观察信号，重点看它是否连接到模型能力、开发工具、商业化或政策变化。"
+
+
+def fallback_reader_takeaway(candidate: Candidate) -> str:
+    group = source_group(candidate)
+    if group == "github_repo":
+        return "如果它和你的工作流相关，优先看 README、示例和最近提交，而不是只看 star 数。"
+    if group == "research":
+        return "建议先读摘要和实验结论，确认它解决的问题是否真实存在，再决定是否深挖论文。"
+    if group in {"hacker_news", "reddit"}:
+        return "建议打开评论区看反对意见，社区分歧往往比标题更能说明这条消息的价值。"
+    return "建议点开原文确认细节，重点看它能不能转化成可用工具、产品机会或学习线索。"
 
 
 def humanize_snippet(snippet: str, config: dict[str, Any] | None = None) -> str:
@@ -789,6 +980,16 @@ def infer_essence_from_title(candidate: Candidate) -> str:
         return "这条在讲 AI Agent 频繁请求授权带来的使用疲劳，反映了代理产品在安全确认和流畅体验之间的真实矛盾。"
     if "llm smells" in text or "code smell" in text:
         return "这类内容通常是在总结 LLM 应用里的反模式，帮助开发者识别提示词、评测、上下文管理或产品体验中的隐藏问题。"
+    if "rag-coding" in text or "medical coding" in text:
+        return "这篇把 RAG 和多 Agent 用到医疗编码任务里，重点看外部知识是否真的能减少专业场景里的模型误判。"
+    if "causal discovery" in text:
+        return "这篇讨论大语言模型做因果发现时为什么容易失败，重点看 Agent 加入干预和验证后能否改善科学推理。"
+    if "peam" in text or "embodied agent memory" in text:
+        return "这篇关注具身 Agent 的记忆机制，重点看经验能否从临时检索变成模型内部可复用的能力。"
+    if source_group(candidate) == "research":
+        return "这是一篇研究信号，重点看它提出的问题是否真实、验证是否扎实，以及未来会不会影响模型、Agent 或工具链。"
+    if source_group(candidate) == "official":
+        return "这是官方发布信号，重点看它是否改变了产品能力、开发者接口、企业落地方式或治理边界。"
     if any(term in text for term in ["funding", "valuation", "raises $", "series "]):
         return "这是 AI 公司融资和估值变化的信号，重点看资本是否继续集中到头部模型公司，以及这会不会改变算力、产品定价和竞争节奏。"
     if re.search(r"\b(claude|gpt|gemini|llama|qwen|deepseek|mistral|opus|sonnet)\b", text) and re.search(r"\d", text):
@@ -807,6 +1008,14 @@ def infer_essence_from_title(candidate: Candidate) -> str:
 
 
 def term_explanations(candidate: Candidate) -> list[dict[str, str]]:
+    editor_terms = candidate.metrics.get("editor_terms")
+    if isinstance(editor_terms, list):
+        normalized: list[dict[str, str]] = []
+        for item in editor_terms:
+            if isinstance(item, dict) and item.get("term") and item.get("explanation"):
+                normalized.append({"term": str(item["term"]), "explanation": str(item["explanation"])})
+        if normalized:
+            return normalized[:5]
     text = f"{candidate.title} {candidate.title_zh} {candidate.snippet}".lower()
     glossary = {
         "mtp": "多 token 预测，用来一次预测多个后续 token，目标是加速生成",
@@ -840,7 +1049,7 @@ def explain_terms(candidate: Candidate) -> str:
 def prepare_reader_fields(candidates: list[Candidate], config: dict[str, Any]) -> None:
     del config
     for candidate in candidates:
-        candidate.one_liner = first_summary_sentence(candidate.summary_zh)
+        candidate.one_liner = candidate.editor_note or first_summary_sentence(candidate.summary_zh)
         if not candidate.one_liner:
             candidate.one_liner = infer_essence_from_title(candidate)
 
@@ -905,7 +1114,12 @@ def reader_item(candidate: Candidate, rank: int) -> dict[str, Any]:
         "score": candidate.score,
         "heat_label": candidate.heat_label,
         "one_liner": candidate.one_liner,
+        "editor_note": candidate.editor_note,
+        "what_happened": candidate.what_happened,
+        "why_it_matters": candidate.why_it_matters,
+        "reader_takeaway": candidate.reader_takeaway,
         "summary": display_summary(candidate.summary_zh),
+        "summary_status": candidate.summary_status,
         "terms": term_explanations(candidate),
         "tags": tags_for(candidate),
         "score_reasons": candidate.score_reasons,
@@ -946,7 +1160,8 @@ def write_report(candidates: list[Candidate], config: dict[str, Any]) -> Path:
     lines = [f"# AI Daily Radar - {today}", ""]
     for index, candidate in enumerate(candidates, start=1):
         terms = term_explanations(candidate)
-        summary = display_summary(candidate.summary_zh) or fallback_summary(candidate, config)
+        if not candidate.what_happened:
+            apply_editor_review(candidate, fallback_summary(candidate, config))
         lines.extend(
             [
                 f"## {index}. {candidate.title}",
@@ -956,19 +1171,27 @@ def write_report(candidates: list[Candidate], config: dict[str, Any]) -> Path:
                 f"来源：{candidate.source} | 类型：{source_label(candidate)} | 推荐分：{candidate.score:.1f}/10",
                 f"链接：{candidate.url}",
                 "",
-                "### 一句话重点",
-                candidate.one_liner or first_summary_sentence(summary) or summary,
+                "### 主编一句话",
+                candidate.editor_note or candidate.one_liner or infer_essence_from_title(candidate),
                 "",
-                "### 关键摘要",
-                display_summary(summary),
+                "### 这条在说什么",
+                candidate.what_happened or display_summary(candidate.summary_zh),
+                "",
+                "### 主编怎么看",
+                candidate.why_it_matters,
+                "",
+                "### 读者行动",
+                candidate.reader_takeaway,
                 "",
             ]
         )
         if terms:
-            lines.append("### 名词解释")
+            lines.append("### 你需要知道的词")
             for term in terms:
                 lines.append(f"- {term['term']}：{term['explanation']}")
             lines.append("")
+        if candidate.summary_status and candidate.summary_status != "ai_editorial":
+            lines.extend(["", f"> 摘要状态：{candidate.summary_status}", ""])
     output_path.write_text("\n".join(lines), encoding="utf-8")
     return output_path
 
@@ -1193,6 +1416,7 @@ def main() -> int:
         print("No AI-related candidates found.", file=sys.stderr)
         return 1
     translate_titles(candidates, config)
+    enrich_article_context(candidates, config)
     summarize_items(candidates, config)
     prepare_reader_fields(candidates, config)
     output_path = write_report(candidates, config)
