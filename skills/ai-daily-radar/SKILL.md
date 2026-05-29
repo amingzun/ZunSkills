@@ -27,7 +27,19 @@ Use only the local shell/Python script for execution. Do not use Computer Use, d
 2. Keep the run lightweight: no HTML, no login-gated sources. Email is optional through SMTP only.
 3. Prefer official APIs and public RSS/JSON endpoints over brittle scraping.
 4. Collect up to 100 candidates and output the top 50 unless the user asks for a different count.
-5. In the final response, include the report path and the selected titles with Chinese title translations.
+5. In the final response, include Codex-previewable Markdown links for generated files and the selected titles with Chinese title translations.
+
+## Reply Format
+
+When reporting generated files back to the user, use clickable Markdown links with absolute filesystem paths so Codex can preview them directly:
+
+```markdown
+日报：[2026-05-29-ai-daily-radar.md](/Users/chenmingjun/.codex/skills/ai-daily-radar/outputs/2026-05-29-ai-daily-radar.md)
+结构化数据：[2026-05-29-items.json](/Users/chenmingjun/.codex/skills/ai-daily-radar/outputs/2026-05-29-items.json)
+源健康：[2026-05-29-source-health.json](/Users/chenmingjun/.codex/skills/ai-daily-radar/outputs/2026-05-29-source-health.json)
+```
+
+Do not return only plain text paths for the main report.
 
 ## Report Format
 
@@ -120,7 +132,7 @@ For a Codex automation, schedule a daily heartbeat at 11:00 and prompt:
 Run this exact local Python script from a shell only; do not use Computer Use, Browser, Chrome, GUI automation, or MCP tools:
 python3 /Users/chenmingjun/.codex/skills/ai-daily-radar/scripts/ai_daily_radar.py --config /Users/chenmingjun/.codex/skills/ai-daily-radar/templates/config.example.json --send-email
 
-Then reply in this thread with the output path, email status, and the 10 titles.
+Then reply in this thread with Codex-previewable Markdown links for the report, items JSON, and source-health JSON; include email status and the 10 titles.
 ```
 
 ## QQ Mail Delivery
