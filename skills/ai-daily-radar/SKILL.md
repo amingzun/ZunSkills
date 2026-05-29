@@ -7,7 +7,7 @@ description: Generate a daily AI news radar from global English-language sources
 
 ## Overview
 
-Generate a ranked Markdown briefing of the day's most important AI updates for a technical builder audience. The report focuses on signal, not volume: broad source collection, GitHub fast-growing AI repos, source health, score reasons, Chinese title translation, and a plain Chinese summary with brief explanations for uncommon AI terms.
+Generate a ranked AI news reading brief from global English-language sources. The report focuses on helping a reader quickly understand what happened and why the item is worth opening: broad source collection, GitHub fast-growing AI repos, Chinese title translation, one-sentence key point, plain Chinese summary, and brief explanations for uncommon AI terms.
 
 ## Quick Start
 
@@ -17,7 +17,7 @@ Run the bundled script from this skill directory:
 python3 scripts/ai_daily_radar.py --config templates/config.example.json
 ```
 
-By default it collects up to 100 candidates, writes the top 50 to `outputs/YYYY-MM-DD-ai-daily-radar.md`, writes source health to `outputs/YYYY-MM-DD-source-health.json`, and prints a short summary.
+By default it collects up to 100 candidates, writes the top 50 to `outputs/YYYY-MM-DD-ai-daily-radar.md`, writes WebUI-ready reading items to `outputs/YYYY-MM-DD-items.json`, writes source health to `outputs/YYYY-MM-DD-source-health.json`, and prints a short summary.
 
 Use only the local shell/Python script for execution. Do not use Computer Use, desktop automation, browser automation, GUI apps, or MCP tools to run this skill.
 
@@ -31,15 +31,28 @@ Use only the local shell/Python script for execution. Do not use Computer Use, d
 
 ## Report Format
 
-Each item should contain:
+Each Markdown item should read like a compact news card:
 
 - Original title
 - Chinese title translation
-- Source name
+- Source name and reader-facing source type
 - URL
-- Recommendation score and score reasons
-- Heat signal, such as points, comments, upvotes, GitHub stars, or 24h star growth
-- Plain Chinese content summary that does not repeat the title or use labels like "essence" / "core information"; briefly explain uncommon terms, acronyms, tools, benchmarks, or model names when they appear
+- Recommendation score as light metadata
+- One-sentence key point
+- Plain Chinese key summary that does not repeat the title or use labels like "essence" / "core information"
+- Brief term explanations for uncommon AI terms, acronyms, tools, benchmarks, or model names when they appear
+
+Do not make source health, trend charts, or pipeline diagnostics part of the reader-facing report. Those are backstage operational artifacts.
+
+## WebUI-Ready Data
+
+The script also writes `outputs/YYYY-MM-DD-items.json` for a future news-style WebUI. Each item includes:
+
+- Stable item id, rank, English title, Chinese title, URL, source, source type, score
+- One-sentence key point and full Chinese summary
+- Tags such as model, Agent, RAG, paper, benchmark, open-source project, inference/deployment, or safety/policy
+- Structured term explanations
+- Internal score reasons and heat labels for sorting/debugging, not as primary UI content
 
 ## Source Strategy
 
@@ -85,18 +98,19 @@ Downrank duplicates, thin marketing posts, generic listicles, and items with no 
 Borrow the useful parts from products like Horizon, agents-radar, AI-news-Automation, and GitHub trend trackers:
 
 - Gather broadly, then rank aggressively.
-- Explain why an item is recommended, not just what it is.
+- Explain what the item is about before exposing ranking logic.
 - Treat GitHub star velocity as an early signal for AI tools.
 - Track source health on every run so failures are visible.
-- Keep markdown output as the canonical artifact until a public web product is designed.
+- Keep Markdown as the readable artifact and JSON as the future WebUI data contract.
 
 ## Later Product Planning
 
 Record these ideas but do not implement them in the current script path:
 
 - Personal `interest_profile.md` for user-specific taste.
-- Public Web UI / GitHub Pages / browsable archive.
+- Public news-style WebUI with daily archive, feed browsing, tags/search, and detail pages.
 - Dedicated model intelligence module for model pricing, endpoints, benchmark movement, and capability changes.
+- Optional subscriptions and email/digest delivery.
 
 ## Scheduled Use
 

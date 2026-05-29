@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import email.utils
+import hashlib
 import html
 import json
 import os
@@ -40,6 +41,7 @@ class Candidate:
     snippet: str = ""
     title_zh: str = ""
     summary_zh: str = ""
+    one_liner: str = ""
     metrics: dict[str, Any] = field(default_factory=dict)
     score_reasons: list[str] = field(default_factory=list)
 
@@ -639,7 +641,21 @@ def translate_titles(candidates: list[Candidate], config: dict[str, Any]) -> Non
         write_json_file(cache_path, cache)
 
     for candidate in candidates:
-        candidate.title_zh = str(cache.get(candidate.title, "")).strip()
+        candidate.title_zh = clean_title_translation(str(cache.get(candidate.title, "")).strip())
+
+
+def clean_title_translation(title: str) -> str:
+    replacements = {
+        "法学硕士": "大语言模型",
+        "LLM的味道": "LLM 异味",
+        "克劳德作品": "Claude Opus",
+        "克劳德": "Claude",
+        "存储库": "仓库",
+        "代理人": "Agent",
+    }
+    for source, target in replacements.items():
+        title = title.replace(source, target)
+    return title
 
 
 def translate_title_google(title: str, translation_config: dict[str, Any], config: dict[str, Any]) -> str:
@@ -765,6 +781,18 @@ def humanize_snippet(snippet: str, config: dict[str, Any] | None = None) -> str:
 
 def infer_essence_from_title(candidate: Candidate) -> str:
     text = f"{candidate.title} {candidate.title_zh}".lower()
+    if "claude code as a daily driver" in text or ("claude code" in text and "daily driver" in text):
+        return "这篇在总结如何把 Claude Code 放进日常开发流程，重点包括项目记忆文件、技能、子代理、插件和 MCP 连接方式。"
+    if "product-market fit" in text and ("anthropic" in text or "openai" in text):
+        return "这条讨论 Anthropic 和 OpenAI 是否已经找到产品市场匹配，重点是 AI 编程、助手和企业工作流是否正在从尝鲜走向高频刚需。"
+    if "permission fatigue" in text:
+        return "这条在讲 AI Agent 频繁请求授权带来的使用疲劳，反映了代理产品在安全确认和流畅体验之间的真实矛盾。"
+    if "llm smells" in text or "code smell" in text:
+        return "这类内容通常是在总结 LLM 应用里的反模式，帮助开发者识别提示词、评测、上下文管理或产品体验中的隐藏问题。"
+    if any(term in text for term in ["funding", "valuation", "raises $", "series "]):
+        return "这是 AI 公司融资和估值变化的信号，重点看资本是否继续集中到头部模型公司，以及这会不会改变算力、产品定价和竞争节奏。"
+    if re.search(r"\b(claude|gpt|gemini|llama|qwen|deepseek|mistral|opus|sonnet)\b", text) and re.search(r"\d", text):
+        return "这是模型版本或能力更新信号，重点看它在推理、编程、多模态、价格或上下文长度上有没有带来实际变化。"
     if any(term in text for term in ["benchmark", "leaderboard", "bench"]):
         return "这主要是在看某个模型或工具的实际成绩，重点是它是否证明了性能、成本或可用性真的变好了。"
     if any(term in text for term in ["merged", "pr ", "pull request"]):
@@ -778,31 +806,115 @@ def infer_essence_from_title(candidate: Candidate) -> str:
     return "公开片段有限；先把它当作一个待核实的 AI 社区信号，点开原文看细节后再判断价值。"
 
 
-def explain_terms(candidate: Candidate) -> str:
+def term_explanations(candidate: Candidate) -> list[dict[str, str]]:
     text = f"{candidate.title} {candidate.title_zh} {candidate.snippet}".lower()
     glossary = {
-        "mtp": "MTP 是多 token 预测，用来一次预测多个后续 token，目标是加速生成",
-        "ttft": "TTFT 是首个 token 延迟，衡量模型开始输出前要等多久",
-        "jetson": "Jetson 是 NVIDIA 的边缘 AI 计算板，常用于机器人和本地推理",
-        "orin": "Orin 是 Jetson 系列里的高性能边缘 AI 芯片平台",
-        "llama.cpp": "llama.cpp 是常用的本地 LLM 推理框架，适合 CPU/消费级硬件部署",
-        "qwen": "Qwen 是阿里通义千问系列模型",
-        "terminal-bench": "Terminal-Bench 是评测模型在终端环境中完成真实任务能力的 benchmark",
-        "benchmark": "benchmark 是评测基准，用来比较模型或系统表现",
-        "world model": "world model 指能学习和预测环境变化的模型，常用于视频、机器人或仿真",
-        "ctf": "CTF 是安全竞赛形式，常用来测试攻防和解题能力",
-        "arxiv": "arXiv 是研究论文预印本平台，很多 AI 论文会先发在这里",
-        "agent": "Agent 指能调用工具、分步骤执行任务的 AI 程序",
-        "rag": "RAG 是检索增强生成，让模型先查资料再回答",
-        "mcp": "MCP 是模型上下文协议，用来连接模型和外部工具/数据源",
-        "gguf": "GGUF 是 llama.cpp 常用的模型文件格式",
-        "vllm": "vLLM 是高吞吐 LLM 推理服务框架",
+        "mtp": "多 token 预测，用来一次预测多个后续 token，目标是加速生成",
+        "ttft": "首个 token 延迟，衡量模型开始输出前要等多久",
+        "jetson": "NVIDIA 的边缘 AI 计算板，常用于机器人和本地推理",
+        "orin": "Jetson 系列里的高性能边缘 AI 芯片平台",
+        "llama.cpp": "常用的本地 LLM 推理框架，适合 CPU/消费级硬件部署",
+        "qwen": "阿里通义千问系列模型",
+        "terminal-bench": "评测模型在终端环境中完成真实任务能力的 benchmark",
+        "benchmark": "评测基准，用来比较模型或系统表现",
+        "world model": "能学习和预测环境变化的模型，常用于视频、机器人或仿真",
+        "ctf": "安全竞赛形式，常用来测试攻防和解题能力",
+        "arxiv": "研究论文预印本平台，很多 AI 论文会先发在这里",
+        "agent": "能调用工具、分步骤执行任务的 AI 程序",
+        "rag": "检索增强生成，让模型先查资料再回答",
+        "mcp": "模型上下文协议，用来连接模型和外部工具/数据源",
+        "gguf": "llama.cpp 常用的模型文件格式",
+        "vllm": "高吞吐 LLM 推理服务框架",
     }
-    explanations: list[str] = []
+    explanations: list[dict[str, str]] = []
     for term, explanation in glossary.items():
-        if term in text:
-            explanations.append(explanation)
-    return "；".join(explanations[:3])
+        if keyword_matches(text, term):
+            explanations.append({"term": term.upper() if term in {"mtp", "ttft", "rag", "mcp", "gguf"} else term, "explanation": explanation})
+    return explanations[:4]
+
+
+def explain_terms(candidate: Candidate) -> str:
+    return "；".join(f"{item['term']} 是{item['explanation']}" for item in term_explanations(candidate)[:3])
+
+
+def prepare_reader_fields(candidates: list[Candidate], config: dict[str, Any]) -> None:
+    del config
+    for candidate in candidates:
+        candidate.one_liner = first_summary_sentence(candidate.summary_zh)
+        if not candidate.one_liner:
+            candidate.one_liner = infer_essence_from_title(candidate)
+
+
+def first_summary_sentence(summary: str) -> str:
+    summary = display_summary(summary)
+    if not summary:
+        return ""
+    parts = re.split(r"(?<=[。！？!?])\s*", summary)
+    for part in parts:
+        part = clean_text(part)
+        if part:
+            return truncate_text(part, 120)
+    return truncate_text(summary, 120)
+
+
+def display_summary(summary: str) -> str:
+    return clean_text(re.sub(r"名词解释：.*$", "", summary, flags=re.S))
+
+
+def source_label(candidate: Candidate) -> str:
+    labels = {
+        "github_repo": "开源项目",
+        "research": "论文研究",
+        "hacker_news": "社区讨论",
+        "reddit": "社区讨论",
+        "official": "官方发布",
+        "news": "资讯精选",
+        "other": "AI 资讯",
+    }
+    return labels.get(source_group(candidate), "AI 资讯")
+
+
+def tags_for(candidate: Candidate) -> list[str]:
+    text = f"{candidate.title} {candidate.snippet} {' '.join(str(topic) for topic in candidate.metrics.get('topics', []))}".lower()
+    tags: list[str] = []
+    checks = [
+        ("开源项目", ["github", "open source", "repo", "library", "framework"]),
+        ("模型", ["model", "llm", "llama", "qwen", "claude", "gemini", "deepseek", "mistral"]),
+        ("Agent", ["agent", "tool calling", "workflow", "mcp"]),
+        ("RAG", ["rag", "retrieval", "vector"]),
+        ("论文", ["paper", "arxiv", "research"]),
+        ("评测", ["benchmark", "leaderboard", "terminal-bench"]),
+        ("推理部署", ["inference", "llama.cpp", "vllm", "ollama", "gguf", "jetson"]),
+        ("安全政策", ["safety", "policy", "regulation", "lawsuit", "copyright"]),
+    ]
+    for tag, keywords in checks:
+        if any(keyword_matches(text, keyword) for keyword in keywords):
+            tags.append(tag)
+    return tags[:4] or ["AI 资讯"]
+
+
+def reader_item(candidate: Candidate, rank: int) -> dict[str, Any]:
+    return {
+        "id": candidate_id(candidate),
+        "rank": rank,
+        "title": candidate.title,
+        "title_zh": candidate.title_zh,
+        "url": candidate.url,
+        "source": candidate.source,
+        "source_label": source_label(candidate),
+        "score": candidate.score,
+        "heat_label": candidate.heat_label,
+        "one_liner": candidate.one_liner,
+        "summary": display_summary(candidate.summary_zh),
+        "terms": term_explanations(candidate),
+        "tags": tags_for(candidate),
+        "score_reasons": candidate.score_reasons,
+    }
+
+
+def candidate_id(candidate: Candidate) -> str:
+    raw = f"{candidate.url}\n{candidate.title}".encode("utf-8")
+    return hashlib.sha1(raw).hexdigest()[:12]
 
 
 def truncate_text(text: str, max_chars: int) -> str:
@@ -833,24 +945,48 @@ def write_report(candidates: list[Candidate], config: dict[str, Any]) -> Path:
     output_path = output_dir / f"{today}-ai-daily-radar.md"
     lines = [f"# AI Daily Radar - {today}", ""]
     for index, candidate in enumerate(candidates, start=1):
+        terms = term_explanations(candidate)
+        summary = display_summary(candidate.summary_zh) or fallback_summary(candidate, config)
         lines.extend(
             [
                 f"## {index}. {candidate.title}",
                 "",
                 f"中文标题：{candidate.title_zh or '翻译暂不可用'}",
                 "",
-                f"来源：{candidate.source}",
+                f"来源：{candidate.source} | 类型：{source_label(candidate)} | 推荐分：{candidate.score:.1f}/10",
                 f"链接：{candidate.url}",
-                f"推荐分：{candidate.score:.1f}/10",
-                f"热度：{candidate.heat_label}",
-                f"推荐理由：{'；'.join(candidate.score_reasons) if candidate.score_reasons else '综合热度、时效和 AI 相关性排序'}",
                 "",
-                "### 内容摘要",
-                candidate.summary_zh or fallback_summary(candidate, config),
+                "### 一句话重点",
+                candidate.one_liner or first_summary_sentence(summary) or summary,
+                "",
+                "### 关键摘要",
+                display_summary(summary),
                 "",
             ]
         )
+        if terms:
+            lines.append("### 名词解释")
+            for term in terms:
+                lines.append(f"- {term['term']}：{term['explanation']}")
+            lines.append("")
     output_path.write_text("\n".join(lines), encoding="utf-8")
+    return output_path
+
+
+def write_items_json(candidates: list[Candidate], config: dict[str, Any]) -> Path:
+    output_dir = ROOT / config.get("output_dir", "outputs")
+    output_dir.mkdir(parents=True, exist_ok=True)
+    today = dt.datetime.now().date().isoformat()
+    reader_config = config.get("reader_output", {})
+    suffix = reader_config.get("json_suffix", "items.json")
+    output_path = output_dir / f"{today}-{suffix}"
+    payload = {
+        "date": today,
+        "generated_at": now_utc().isoformat(),
+        "count": len(candidates),
+        "items": [reader_item(candidate, index) for index, candidate in enumerate(candidates, start=1)],
+    }
+    write_json_file(output_path, payload)
     return output_path
 
 
@@ -1058,10 +1194,13 @@ def main() -> int:
         return 1
     translate_titles(candidates, config)
     summarize_items(candidates, config)
+    prepare_reader_fields(candidates, config)
     output_path = write_report(candidates, config)
+    items_path = write_items_json(candidates, config)
     health_path = write_source_health(health, config)
     email_sent = send_email_report(output_path, config, force=args.send_email)
     print(f"Report: {output_path}")
+    print(f"Items JSON: {items_path}")
     print(f"Source health: {health_path}")
     if email_sent:
         print("Email: sent")

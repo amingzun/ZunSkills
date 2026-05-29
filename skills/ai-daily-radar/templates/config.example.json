@@ -27,9 +27,14 @@
     "enabled": true,
     "provider": "openai",
     "model": "gpt-4.1-mini",
-    "style_version": "plain_summary_v4",
+    "style_version": "reader_summary_v7",
     "workers": 4,
     "cache_file": "outputs/content_summary_cache.json"
+  },
+  "reader_output": {
+    "enabled": true,
+    "json_suffix": "items.json",
+    "style": "news_cards"
   },
   "email_delivery": {
     "enabled": false,
